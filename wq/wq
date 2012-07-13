@@ -420,12 +420,12 @@ class DrainCommand(dict):
         parser=OptionParser(DrainCommand.__doc__)
         options, args = parser.parse_args(args)
 
-        if len(args) < 2:
+        if len(args) < 1:
             parser.print_help()
             sys.exit(1)
-	self.node = args[0]
-        self.yamline = _process_singleline_yaml(args[1])
-
+        self.yamldrain = _process_singleline_yaml(args[0])
+        print self.yamldrain
+        
         #if(not self.yamline.has_key('status')):
         #    #Throw Error Here
         #    print "Error: Did you mean 'status'?"
@@ -433,10 +433,9 @@ class DrainCommand(dict):
 
     def execute(self):
 	    message={}
-	    message['command'] = 'node'
+	    message['command'] = 'drain'
 	    message['user'] = os.environ['USER']
-	    message['node'] = self.node
-	    message['yamline'] = self.yamline
+	    message['yamldrain'] = self.yamldrain
 	    resp = send_message(message) 
 	    print resp['response']
 	

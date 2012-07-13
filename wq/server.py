@@ -61,8 +61,6 @@ def print_stat(status):
             	    lens[n] = max(lens[n],len(l[n]))
         	lines.append(l)
 		totalActiveCores=totalActiveCores-d['ncores']
-        if(d['drain']==True):
-                print "Waiting for Drain",d
                 
     fmt = ' %(usage)-'+str(lens['usage'])+'s  %(host)-'+str(lens['host'])+'s '
     fmt += ' %(mem)'+str(lens['mem'])+'s %(groups)-'+str(lens['groups'])+'s'
@@ -77,6 +75,8 @@ def print_stat(status):
     else: perc=00.00
     print
     print ' Used cores: %i/%i (%3.1f%%) (%i are offline)' % (status['used'],totalActiveCores,perc,status['ncores']-totalActiveCores)
+    if(status['drain']):
+        print " WARNING: WAITING FOR DRAIN"
     
 def print_users(users):
     """
@@ -257,13 +257,9 @@ class Node:
         self.mem    = float(mem)
         self.used   = 0
 	self.online = True
-        self.drain  = False
         
     def setOnline(self,truthValue):
 	self.online = truthValue
-
-    def setDrain(self,truthValue):
-        self.drain = truthValue
 
     def Reserve(self):
         self.used+=1
@@ -283,7 +279,8 @@ class Cluster:
     def __init__(self,filename):
         self.filename=filename
         self.nodes={}
-
+        self.drain = False
+        
         for line in open(filename):
             nd = Node(line);
             self.nodes[nd.host] = nd
@@ -291,6 +288,9 @@ class Cluster:
     def Reserve(self,hosts):
         for h in hosts:
             self.nodes[h].Reserve()
+            
+    def setDrain(self,truthValue):
+        self.drain = truthValue
 
     def Unreserve(self,hosts):
         for h in hosts:
@@ -306,13 +306,13 @@ class Cluster:
         nodes.sort()
         for h in nodes:
             nds.append({'hostname':h,'used':self.nodes[h].used,'ncores':self.nodes[h].ncores, \
-                       'mem':self.nodes[h].mem,'drain':self.nodes[h].drain,'grps':self.nodes[h].grps,'online':self.nodes[h].online})
+                       'mem':self.nodes[h].mem,'grps':self.nodes[h].grps,'online':self.nodes[h].online})
             
             tot+=self.nodes[h].ncores
             used+=self.nodes[h].used
             if (self.nodes[h].used>0):
               use.append((h,self.nodes[h].used))  
-
+        res['drain']=self.drain
         res['used']=used
         res['ncores']=tot
         res['nnodes']=len(self.nodes)
@@ -443,7 +443,7 @@ class Job(dict):
             self['reason'] = "'user' field not in message"
         elif 'commandline' not in self:
             self['status'] = 'nevermatch'
-            self['reason'] = "'commandline' field not in message"
+            self['reason'] = "'commandline' field not in "
         else:
             self['status'] = 'wait'
             self['reason'] = ''
@@ -1037,32 +1037,23 @@ class JobQueue:
             self.response['error'] = ("only support 'sub','gethosts', "
                                       "'ls','stat','users','rm','notify','node'"
                                       "'refresh','drain' commands")
+            
     def _process_drain_request(self,message):
-        nodename = message['node']
 	if (not message['yamldrain'].has_key('status')):
             self.response['error']=('Need to supply status keyword.')
             return None
 
         status=message['yamldrain']['status']
-
-        if (status=='on'):
-		setstat=True
-	elif (status=='off'):
-		setstat=False
-	else:
-		self.response['error']=("Don't understand this status")
-		return None
-
-	found=False
-	
-	for inode in self.cluster.nodes.keys():
-		if (inode==nodename):
-			self.cluster.nodes[inode].setDrain(setstat)
-			found=True
-			self.response['response'] = 'OK'
-			break
-	if(not found):
-		self.response['error'] = ("Host not found.")
+        
+        #if (status=='on'):
+		#setstat=True
+	#elif (status=='off'):
+		#setstat=False
+	#else:
+		#self.response['error']=("Don't understand this status")
+		#return None
+        self.cluster.setDrain(status)#setstat)
+        self.response['response'] = 'OK'
     	
 	return None
 	
@@ -1109,7 +1100,11 @@ class JobQueue:
         if pid is None:
             self.response['error'] = "submit requests must contain the 'pid' field"
             return
-
+        
+        if (self.cluster.drain):
+            self.response['error'] = "wait until drain is complete"
+            return
+        
         req = message.get('require',None)
         if req  is None:
             self.response['error'] = "submit requests must contain the 'require' field"

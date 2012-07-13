@@ -51,7 +51,7 @@ def print_stat(status):
         	for n in lens:
             	    lens[n] = max(lens[n],len(l[n]))
         	lines.append(l)
-	if(d['online']==False):
+	if(d['online']==False): 
 		usage = '['+'X'*d['ncores']+']'
         	l={'usage':usage,
            	'host':d['hostname'],
@@ -61,7 +61,9 @@ def print_stat(status):
             	    lens[n] = max(lens[n],len(l[n]))
         	lines.append(l)
 		totalActiveCores=totalActiveCores-d['ncores']
-
+        if(d['drain']==True):
+                print "Waiting for Drain",d
+                
     fmt = ' %(usage)-'+str(lens['usage'])+'s  %(host)-'+str(lens['host'])+'s '
     fmt += ' %(mem)'+str(lens['mem'])+'s %(groups)-'+str(lens['groups'])+'s'
     hdr={}
@@ -75,7 +77,7 @@ def print_stat(status):
     else: perc=00.00
     print
     print ' Used cores: %i/%i (%3.1f%%) (%i are offline)' % (status['used'],totalActiveCores,perc,status['ncores']-totalActiveCores)
-
+    
 def print_users(users):
     """
     input should be a dict.  You an convert a Users instance
@@ -255,9 +257,13 @@ class Node:
         self.mem    = float(mem)
         self.used   = 0
 	self.online = True
-
+        self.drain  = False
+        
     def setOnline(self,truthValue):
-	self.online=truthValue
+	self.online = truthValue
+
+    def setDrain(self,truthValue):
+        self.drain = truthValue
 
     def Reserve(self):
         self.used+=1
@@ -300,7 +306,7 @@ class Cluster:
         nodes.sort()
         for h in nodes:
             nds.append({'hostname':h,'used':self.nodes[h].used,'ncores':self.nodes[h].ncores, \
-                       'mem':self.nodes[h].mem, 'grps':self.nodes[h].grps,'online':self.nodes[h].online})
+                       'mem':self.nodes[h].mem,'drain':self.nodes[h].drain,'grps':self.nodes[h].grps,'online':self.nodes[h].online})
             
             tot+=self.nodes[h].ncores
             used+=self.nodes[h].used
@@ -1023,12 +1029,43 @@ class JobQueue:
         elif command == 'refresh':
             self.refresh()
             self.response['response'] = 'OK'
-	elif command =='node':
+	elif command == 'node':
 	    self._process_node_request(message)
+	elif command == 'drain':
+            self._process_drain_request(message)
         else:
             self.response['error'] = ("only support 'sub','gethosts', "
                                       "'ls','stat','users','rm','notify','node'"
-                                      "'refresh' commands")
+                                      "'refresh','drain' commands")
+    def _process_drain_request(self,message):
+        nodename = message['node']
+	if (not message['yamldrain'].has_key('status')):
+            self.response['error']=('Need to supply status keyword.')
+            return None
+
+        status=message['yamldrain']['status']
+
+        if (status=='on'):
+		setstat=True
+	elif (status=='off'):
+		setstat=False
+	else:
+		self.response['error']=("Don't understand this status")
+		return None
+
+	found=False
+	
+	for inode in self.cluster.nodes.keys():
+		if (inode==nodename):
+			self.cluster.nodes[inode].setDrain(setstat)
+			found=True
+			self.response['response'] = 'OK'
+			break
+	if(not found):
+		self.response['error'] = ("Host not found.")
+    	
+	return None
+	
     def _process_node_request(self, message):
 
 	nodename = message['node']

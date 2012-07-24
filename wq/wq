@@ -197,6 +197,8 @@ class JobLister(dict):
 
         njobs = nrun+nwait
         stats = 'Jobs: %s Running: %s Waiting: %s' % (njobs,nrun,nwait)
+        if(resp['drainStat']): #######is this right?#######################
+            print " WARNING: WAITING FOR DRAIN"
         if self.user is not None:
             print ' User: %s %s' % (','.join(self.user),stats)
         else:

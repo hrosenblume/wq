@@ -953,7 +953,7 @@ class JobQueue:
             - note we should have no 'nevermatch' status here
 
         """
-
+       
         block_pid=None
         pids_to_del = []
         for priority in PRIORITY_LIST:
@@ -995,7 +995,10 @@ class JobQueue:
         # rebuild the queue without these items
         if len(pids_to_del) > 0:
             self.queue = [j for j in self.queue if j['pid'] not in pids_to_del]
-
+        #print self.queue.cluster.Status()    
+        #if(status['ncores']==0):##############test i was thinking about here
+            #self.cluster.drain=False
+            
     def _unreserve_job_and_decrement_user(self, job):
         job.UnSpool()
         if job['status'] == 'run':
@@ -1181,6 +1184,7 @@ class JobQueue:
             listing.append(job.asdict())
         
         self.response['response'] = listing
+        self.response['drainStat']= self.cluster.drain  ##########is this right?#######
 
     def _process_userlist_request(self):
         self.response['response'] = self.users.asdict()

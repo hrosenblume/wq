@@ -1,0 +1,8 @@
+/usr/local/lib/python2.7/dist-packages/wq/server.py
+/usr/local/lib/python2.7/dist-packages/wq/TestQueue.py
+/usr/local/lib/python2.7/dist-packages/wq/__init__.py
+/usr/local/lib/python2.7/dist-packages/wq/server.pyc
+/usr/local/lib/python2.7/dist-packages/wq/TestQueue.pyc
+/usr/local/lib/python2.7/dist-packages/wq/__init__.pyc
+/usr/local/bin/wq
+/usr/local/lib/python2.7/dist-packages/wq-0.1.0.egg-info

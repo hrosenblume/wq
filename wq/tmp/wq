@@ -1,0 +1,945 @@
+#!/usr/bin/env python
+#7_10_12 copy
+"""
+    %prog [options] command [command options]
+
+Basic command modes are the following.  There are additional
+options for each command
+
+    sub:        Submit a job.
+    ls:         Print the job listing
+    stat:       Get the status of the cluster/queue.
+    rm:         Remove a job or all jobs for a user.
+    refresh:    Force a refresh of the job queue.
+    limit:      Place limits on a user such as Ncores or Njobs.
+    serve:      Run a server.
+    node: 	Set systems from offline to online or vice versa.
+
+To get help on each command, use -h, for example
+    %prog sub -h
+    %prog rm -h
+
+Note: additional basic setup options, *before* the command
+is processed, are
+    -p: port number
+e.g.
+    wq -p port sub ...
+"""
+
+import socket
+import sys
+import yaml
+import os
+import signal 
+import wq
+import time
+import subprocess
+
+from optparse import OptionParser
+
+# need to move this into server.py and require a real installation
+_COMMANDS = ['serve','sub','ls','stat','rm','refresh']
+
+# global variables, ick
+# only part is currently changeable through the command line
+pars={'host':wq.DEFAULT_HOST,      # Symbolic name meaning all available interfaces
+      'port':wq.DEFAULT_PORT,
+      'max_buffsize':wq.DEFAULT_MAX_BUFFSIZE}
+
+# note this is different from the timeout for the server.
+SOCK_TIMEOUT = 45.0
+
+class ServerWrapper:
+    """
+    usage: wq serve cluster_def_file
+
+    The def file is one line per node
+
+        hostname ncores mem groups
+
+    The groups are an optional comma separate list.
+    """
+    def __init__(self, args, **keys):
+        import wq
+        parser=OptionParser(ServerWrapper.__doc__)
+        parser.add_option("-s", "--spool-dir", default=None, 
+                          help="use the specified spool dir")
+
+        options, args = parser.parse_args(args)
+        spool_dir=options.spool_dir
+        if spool_dir is None:
+            spool_dir=wq.DEFAULT_SPOOL_DIR
+
+        if len(args) < 1:
+            parser.print_help()
+            sys.exit(1)
+
+        if args[0] == '-h':
+            parser.print_help()
+            sys.exit(1)
+
+        # these keywords get passed all the way down to JobQueue and Job
+        self.srv = wq.server.Server(args[0], port=pars['port'], spool_dir=spool_dir)
+
+    def execute(self):
+        self.srv.run()
+
+class JobLister(dict):
+    """
+    usage: wq ls [options]
+
+    print the job list to stdout.  
+    
+    If -u/--user is sent, the listing is restricted to that user/users.
+
+    If -f/--full is sent, the full job listing is given.  This is a yaml
+    document that can be read and processed to provide a customised listing.\n"""
+
+    def __init__(self, args):
+        #Command.__init__(self, args)
+        self._process_args(args)
+
+    def _process_args(self, args):
+        parser=OptionParser(JobLister.__doc__)
+        parser.add_option("-u", "--user", default=None, 
+                          help="Only list jobs for the user.  can be a comma separated list")
+        parser.add_option("-f", "--full", action='store_true',
+                          help="Give a full job listing as a YAML stream.")
+
+        options, args = parser.parse_args(args)
+        self.user = options.user
+        self.full = options.full
+
+        if self.user is not None:
+            self.user = self.user.split(',')
+
+    def execute(self):
+        message={}
+        message['command'] = 'ls'
+        resp = send_message(message)
+
+
+        if self.full:
+            if self.user is not None:
+                show=[r for r in resp['response'] if r['user'] in self.user]
+            else:
+                show = resp['response']
+            if len(show) > 0:
+                print yaml.dump(show)
+
+            return
+
+        names = ['pid','user','st','pri','nc','nh','host0','Tq','Trun','cmd']
+
+        lens={}
+        for k in names:
+            lens[k] = len(k)
+
+        nrun=0
+        nwait=0
+        lines = []
+        timenow = time.time()
+        for r in resp['response']:
+
+            if (self.user is None) or (r['user'] in self.user):
+                if r['status'] == 'run':
+                    nrun+=1
+                else:
+                    nwait+=1
+
+                this={}
+                this['pid'] = r['pid']
+                this['user'] = r['user']
+                this['pri'] = r['priority']
+                this['st'] = self._get_status(r)
+                this['nc'] = self._get_ncores(r)
+                # this may replace command with job_name, if it exists
+                this['cmd'] = self._get_command(r)
+                this['Tq'] = self._get_time_in(r,timenow)
+                this['Trun'] = self._get_time_run(r,timenow)
+
+                this['nh'] = self._get_nhosts(r)
+
+                # this is the first host on the list
+                this['host0'] = self._get_host0(r)
+                
+
+                # for sorting
+                this['time_sub'] = r['time_sub']
+
+                for k in this:
+                    if k in lens:
+                        lens[k] = max(lens[k], len(('%s' % this[k])))
+                
+                lines.append(this)
+
+        fmt = []
+        for k in names:
+            if k in ['Tq','Trun']:
+                align=''
+            else:
+                align='-'
+            fmt.append('%('+k+')'+align+str(lens[k])+'s')
+        fmt = ' '.join(fmt)
+        fmt = ' '+fmt
+
+
+        # this is the header for each column
+        if len(lines) > 0:
+            print fmt % {'pid':'Pid','user':'User',
+                         'st':'St', 'pri':'Pri', 'nc':'Nc',
+                         'nh':'Nh','host0':'Host0',
+                         'cmd':'Cmd','Tq':'Tq','Trun':'Trun'}
+
+        for l in sorted(lines, key=lambda x: x['time_sub']):
+            print fmt % l
+
+        njobs = nrun+nwait
+        stats = 'Jobs: %s Running: %s Waiting: %s' % (njobs,nrun,nwait)
+        if self.user is not None:
+            print ' User: %s %s' % (','.join(self.user),stats)
+        else:
+            print ' %s' % stats
+                
+    def _get_ncores(self, r):
+        if r['status'] == 'run':
+            return len(r['hosts'])
+        else:
+            return '-'
+
+    def _time_diff(self,dt):
+        ## surprisingly enough, nothing like this in date or time modules
+        ds = int (dt)
+        nd = int(ds/(24*60*60))
+        ds -= nd*24*60*60
+        nh = int (ds/(3600))
+        ds -= nh*3600
+        nm = int (ds/60)
+        ds -= nm*60
+        ns = ds
+
+        r=''
+
+        if nd > 0:
+            r = '%dd%02dh%02dm' % (nd,nh,nm)
+        elif nh > 0:
+            r = '%02dh%02dm%02ds' % (nh,nm,ns)
+        elif nm > 0:
+            r = '%02dm%02ds' % (nm,ns)
+        else:
+            r = '%02ds' % ns
+
+        return r
+                  
+
+
+    def _get_time_in(self, r,timenow):
+        return self._time_diff(timenow-r['time_sub'])
+
+    def _get_time_run(self, r,timenow):
+        if r['status'] == 'run':
+            return self._time_diff(timenow-r['time_run'])
+        else:
+            return '-'
+
+    def _get_host0(self, r):
+        """
+        Get the first host in the list
+        """
+        if r['status'] != 'run':
+            return '-'
+
+        if not r['hosts']:
+            return '-'
+        else:
+            return r['hosts'][0]
+
+    def _get_hosts(self, r):
+        """
+        this is obsolete
+        """
+        if r['status'] != 'run':
+            return '-'
+
+        if not r['hosts']:
+            return '-'
+        else:
+            hd={}
+            for host in r['hosts']:
+                hd[host] = host
+            hosts = list(hd.keys())
+            hosts.sort()
+            return ','.join(hosts)
+
+    def _get_nhosts(self, r):
+        if r['status'] == 'run':
+            hd={}
+            for host in r['hosts']:
+                hd[host] = host
+            return len(hd)
+        else:
+            return '-'
+
+    def _get_status(self, r):
+        if self.full:
+            if r['status'] == 'run':
+                return 'running'
+            else:
+                return r['reason']
+        else:
+            if r['status'] == 'run':
+                return 'R'
+            else:
+                return 'W'
+
+    def _get_command(self, r):
+        if 'job_name' in r['require']:
+            c = r['require']['job_name']
+        else:
+            if self.full:
+                c = r['commandline']
+            else:
+                c = r['commandline'].split()[0]
+
+        # remove spaces from name so we can use awk on
+        # the output of wq ls
+        c = '-'.join(str(c).split())
+        return c
+
+class Stats(dict):
+    """
+    usage: wq stat
+
+    print the status of the queue and compute cluster
+    """
+
+    def __init__(self, args):
+        parser=OptionParser(Stats.__doc__)
+        options, args = parser.parse_args(args)
+
+    def execute(self):
+        message={}
+        message['command'] = 'stat'
+
+        resp = send_message(message)
+
+        status=resp['response']
+
+        wq.server.print_stat(status)
+
+class UsersLister(dict):
+    """
+    usage: wq users
+
+    print user info for the system
+    """
+
+    def __init__(self, args):
+        parser=OptionParser(Stats.__doc__)
+        options, args = parser.parse_args(args)
+
+    def execute(self):
+        message={}
+        message['command'] = 'users'
+
+        resp = send_message(message)
+
+        users=resp['response']
+
+        wq.server.print_users(users)
+
+class Limiter(dict):
+    """
+    usage: wq limit "key1:val1; key2:val2; ..."
+
+    Place limits on the user such as
+        wq limit "Njobs: 10"
+        wq limit "Ncores: 120"
+        wq limit "Ncores: 120; Njobs: 25"
+    """
+
+    def __init__(self, args):
+        parser=OptionParser(Limiter.__doc__)
+        options, args = parser.parse_args(args)
+
+        if len(args) < 1:
+            parser.print_help()
+            sys.exit(1)
+
+        self.limits = _process_singleline_ml(args[0])
+
+    def execute(self):
+        message={}
+        message['command'] = 'limit'
+        message['user'] = os.environ['USER']
+        message['limits'] = self.limits
+
+        resp = send_message(message)
+
+        print resp['response']
+
+class NodeCommand(dict):
+    """
+    usage: wq node astro001 astro002 "status:online;"
+
+    set a node from offline to online or vice versa
+    """
+    
+    def __init__(self, args):
+        parser=OptionParser(NodeCommand.__doc__)
+        options, args = parser.parse_args(args)
+
+        if len(args) < 2:
+            parser.print_help()
+            sys.exit(1)
+	self.node = args[0]
+        self.yamline = _process_singleline_yaml(args[1])
+
+        #if(not self.yamline.has_key('status')):
+        #    #Throw Error Here
+        #    print "Error: Did you mean 'status'?"
+        #    sys.exit(1)
+
+    def execute(self):
+	    message={}
+	    message['command'] = 'node'
+	    message['user'] = os.environ['USER']
+	    message['node'] = self.node
+	    message['yamline'] = self.yamline
+	    resp = send_message(message) 
+	    print resp['response']
+	
+
+class Refresher(dict):
+    """
+    usage: wq refresh
+
+    Request that the server refresh it's job list
+    """
+
+    def __init__(self, args):
+        parser=OptionParser(Refresher.__doc__)
+        options, args = parser.parse_args(args)
+
+    def execute(self):
+        message={}
+        message['command'] = 'refresh'
+
+        resp = send_message(message)
+
+class Remover(dict):
+    """
+    usage: wq rm pid
+
+    Request that the server remove the specified job or jobs; the pid can be a
+    comma separated list.  Use "wq rm all" to remove all of your jobs.
+    """
+
+    def __init__(self, args):
+        parser=OptionParser(Remover.__doc__)
+        options, args = parser.parse_args(args)
+
+        if len(args) < 1:
+            parser.print_help()
+            sys.exit(1)
+
+        pid = args[0]
+        if pid == 'all':
+            self.pid=['all']
+        else:
+            self.pid = [int(p) for p in args]
+
+    def execute(self):
+        for pid in self.pid:
+            self.do_remove(pid)
+    
+    def do_remove(self, pid):
+        message={}
+        message['command'] = 'rm'
+        message['pid'] = pid
+        message['user'] = os.environ['USER']
+
+        resp = send_message(message)
+
+        if resp['response']=='OK':
+            if 'pids_to_kill' not in resp:
+                print "Internal error, server shuold return pids_to_kill."
+                sys.exit(1)
+
+            # this is always a list, for when we do "wq rm all"
+            pids_to_kill = resp['pids_to_kill']
+            for pidtokill in pids_to_kill:
+
+                os.kill(pidtokill,signal.SIGTERM)
+                time.sleep (0.1) ## sleep  a bit
+                cc=0
+                while (self._pid_exists(pidtokill) and (cc<100)): #see when it disappears, up to 10sec
+                    time.sleep(0.1)
+                    cc+=1
+                if (self._pid_exists(pidtokill)):
+                    #bastard wouldn't die
+                    os.kill(pid,signal.SIGKILL)
+                    time.sleep(1)
+
+            ## Now refresh to remove it from queue
+            message={}
+            message['command'] = 'refresh'
+            resp = send_message(message)
+
+        else:
+            print "Cannot remove, reason=", resp['error']
+
+    def _pid_exists(self, pid):        
+        """ Check For the existence of a unix pid. """
+        try:
+            # this doesn't actually kill the job, it does nothing if the pid
+            # exists, if doesn't exist raises OSError
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        else:
+            return True
+
+def _process_singleline_yaml(data):
+    import re
+
+    yaml_data={}
+    if data is None:
+        return yaml_data
+
+    # convert semicolon to newline
+    r = re.sub(';\s*', '\n', data)
+    # make sure there is a space between : and value
+    r = r.replace(':',': ')
+    
+    yaml_data = yaml.load(r)
+
+    return yaml_data
+
+
+
+class Submitter(dict):
+    """
+    usage: wq sub [options] [args]
+
+    There are three modes.  Note you can add -r/--require to each of these
+    *except* batch mode.  -r/--require will over-ride requirements in job files.
+
+        - Send a command as an argument.
+
+                wq sub -c command
+
+          The command is just a string.  You probably want to double quote it
+        - Submit a job file
+
+                wq sub job_file
+
+          The job stays in the foreground, so this is only useful for
+          interactive jobs where you need to specify complex job requirements.
+
+        - Submit one or more job files in batch mode.
+
+                wq sub -b job_file1 job_file2 ....
+
+          Each job will be submitted in the background.  This is the preferred
+          method for non-interactive jobs.
+
+    """
+    def __init__(self, args):
+        self._process_args(args)
+
+    def _process_args(self, args):
+        parser=OptionParser(Submitter.__doc__)
+        parser.add_option("-r", "--require", default=None, help="optional requirements for job")
+        parser.add_option("-b", "--batch", action='store_true', help="Submit jobs in batch mode.")
+        parser.add_option("-c", "--command", default=None, help="The command to run as a string")
+
+        options, args = parser.parse_args(args)
+
+        self['require_opt'] = options.require
+
+        # batch mode is special; just store the job files and let
+        # execute() deal properly with them
+        self.isbatch=False
+        if len(args) > 0 and options.batch:
+            # we just store the files and later run them when
+            # execute is done
+            self.isbatch=True
+            self.job_files = args[:]
+            return
+
+        if options.command is not None:
+            commandline = options.command
+            reqs = {}
+        elif len(args) > 0:
+            # a job file was sent
+            job_file = args[0]
+            commandline, reqs = self._process_job_file(job_file)
+        else:
+            raise ValueError
+        
+
+        if commandline is None:
+            parser.print_help()
+            sys.exit(1)
+
+        # requirements sent using -r/--require over-ride
+        #reqs_from_opt = self._process_require_opt(self['require_opt'])
+        reqs_from_opt = _process_singleline_yaml(self['require_opt'])
+
+        for ro in reqs_from_opt:
+            reqs[ro] = reqs_from_opt[ro]
+
+        self['commandline'] = commandline
+        self['require'] = reqs
+
+    def _batch_submit_joblist(self, job_files):
+        njob = len(job_files)
+        for f in job_files:
+            self._batch_submit_job(f)
+            if njob > 1:
+                time.sleep(1)
+
+    def _batch_submit_job(self, job_file):
+        """
+        For batch mode we call wq again with a single job file and
+        no requirements
+        """
+
+        print 'submitting',job_file,
+        log_file = open(job_file+'.wqlog', 'w')
+        port = str(pars['port'])
+        p=subprocess.Popen(['nohup','wq','-p',port,'sub',job_file], 
+                           env=os.environ,
+                           stderr=subprocess.STDOUT, 
+                           stdout=log_file)
+        print 'pid:',p.pid
+
+    def _process_job_file(self, fname):
+
+        reqs = yaml.load(open(fname))
+        if 'command' not in reqs:
+            raise ValueError("no command found in job file")
+        commandline = reqs['command']
+
+        # don't need this in the requirements
+        del reqs['command']
+
+        return commandline, reqs
+
+    def _process_require_opt(self, require_opt):
+        import re
+
+        reqs={}
+        if require_opt is None:
+            return reqs
+
+        # convert semicolon to newline
+        r = re.sub(';\s*', '\n', require_opt)
+        # make sure there is a space between : and value
+        r = r.replace(':',': ')
+        
+        reqs = yaml.load(r)
+
+        return reqs
+
+    def print_job_info(self):
+        print '------------'
+        print 'Job info:\n'
+        print 'command line:',self['commandline']
+        for k in self['require']:
+            print '%s: %s' % (k,self['require'][k])
+        print '------------'
+
+    def receive_signal(self,a,b):
+        pass
+
+    def receive_kill(self,a,b):
+        try:
+            self.remoteprocess.kill()
+        except:
+            pass
+
+        self.message['command']='notify'
+        self.message['notification']='done'
+        #sres = send_message(self.message, timeout=SOCK_TIMEOUT, crash_on_timeout=True)
+        sres = send_message(self.message)
+        self.print_res(sres)
+        exit(0)
+                                        
+    def make_command_list(self, target_machine, command, require):
+        # first, force pseudo tty; this is key to make sure command
+        # dies if this client dies
+        # also -A forwards ssh agent
+        cmdlist = ['ssh','-t', '-t','-A']
+
+        # should we forward X? default is no no.  This is in the
+        # requirements as
+        #   X: true or X: 1 for yes (anything evaluates as True in python)
+        #   X: false or X: 0 for no
+        xforward = require.get('X',False)
+        if xforward:
+            cmdlist.append('-X')
+        else:
+            cmdlist.append('-x')
+
+        # full command, we first change directory to CWD
+        pwd =os.getcwd()
+        full_command='cd '+pwd+'; '+command
+
+        cmdlist.append(target_machine)
+        cmdlist.append(full_command)
+
+        return cmdlist
+
+    def execute(self):
+        """
+
+        - build the message request for the server.  
+        - send the message and await reply
+        - Maybe wait until we can run 
+        - ssh into the target machine and run the job in the same
+          directory where this client is running.
+
+        For MPI jobs, a host file can be created.
+        """
+
+        if self.isbatch:
+            self._batch_submit_joblist(self.job_files)
+            return
+
+        message = {}
+        message['command'] = 'sub'
+        message['pid'] = os.getpid()
+        message['user'] = os.environ['USER']
+        message['require'] = self['require']
+        message['commandline'] = self['commandline']
+
+        sres = send_message(message)
+
+        if sres['response'] == 'wait':
+            # wait until we can go
+            print "waiting:",sres['reason']
+            #signal.signal(signal.SIGUSR1, self.receive_signal)
+            fname = sres['spool_fname']
+            wsleep = sres['spool_wait']
+            while True:
+                time.sleep(wsleep)
+                try:
+                    #print "trying:",fname
+                    open(fname)
+                    print "ok"
+                    break
+                except IOError:
+                    pass
+
+
+            message['command']='gethosts'
+            sres=send_message(message)
+
+        ## save final message for potential kill
+        self.message=message
+
+        ## if hostfile specified need to create one
+        hosts=sres['hosts']
+        if 'hostfile' in self['require']:
+            f=open(self['require']['hostfile'],'w')
+            for h in hosts:
+                f.write(h+'\n')
+            f.close()
+
+        target=hosts[0]
+        command=self['commandline']
+
+        ## here we execute
+        print "executing on host: %s with pid: %s" % (target,message['pid'])
+        signal.signal(signal.SIGTERM, self.receive_kill)
+
+        cmdlist = self.make_command_list(target,command,self['require'])
+        self.remoteprocess= subprocess.Popen(cmdlist)
+        #self.remoteprocess= subprocess.Popen(['ssh','-t', '-t',target,'cd '+pwd+'; '+command])
+        self.remoteprocess.wait()
+
+        ### now we notify done.
+        print "done"
+        message['command']='notify'
+        message['notification']='done'
+
+        # we want to die if the notification fails so the server will see
+        # the missing pid
+        #sres = send_message(self.message, timeout=SOCK_TIMEOUT, crash_on_timeout=True)
+        sres = send_message(self.message)
+        self.print_res(sres)
+
+    def print_res(self, res):
+        import pprint
+        for k in res:
+            kk = k+': '
+            pf = pprint.pformat(res[k])
+            print '%-15s %s' % (kk,pf)
+
+def socket_connect(sock, conninfo, crash_on_timeout=False):
+    # crash will only happen if timeouts have been enabled, otherwise we just
+    # wait
+    if crash_on_timeout:
+        sock.connect(conninfo)
+    else:
+        while True:
+            try:
+                sock.connect(conninfo)
+                break
+            except socket.timeout:
+                pass
+
+def socket_send(sock, mess):
+    """
+    Need to do this with timeouts, which are non-blocking under the hood
+
+    hmm... is this going to max the cpu if we can't get through right away?
+    """
+    reslen=len(mess)
+    tnsent=conn.send(mess)
+    nsent = tnsent
+    if nsent < reslen:
+        tnsent=conn.send(mess[nsent:])
+        nsent += tnsent
+
+
+def send_message(message, timeout=None, crash_on_timeout=False):
+    if len(message) == 0:
+        raise ValueError("message must have len > 0")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # make sure to set timeout *before* calling connect()
+    if timeout is not None:
+        sock.settimeout(timeout)
+
+    conninfo = (pars['host'], pars['port'])
+    socket_connect(sock, conninfo, crash_on_timeout=crash_on_timeout)
+
+    rdict=None
+    try:
+        jmess=yaml.dump(message)
+
+        wq.server.socket_send(sock, jmess)
+        data = wq.server.socket_recieve(sock, pars['max_buffsize'])
+
+        sock.close()
+
+        try:
+            rdict = yaml.load(data)
+        except:
+            print 'YAML err:'
+            print data
+            sys.exit(1)
+
+        if 'error' in rdict:
+            raise RuntimeError("Error reported by server: %s" % rdict['error'])
+
+        if 'response' not in rdict:
+            raise RuntimeError("Internal error. Expected a response and got screwed.")
+
+    except:
+        es=sys.exc_info()
+        print 'caught exception type:', es[0],'details:',es[1]
+        rdict=None
+    finally:
+        sock.close()
+
+    if rdict is None:
+        sys.exit(1)
+
+    return rdict
+
+
+def get_command_obj(args, **keys):
+    if args[0] == 'sub':
+        return Submitter(args[1:])
+    elif args[0] == 'ls':
+        return JobLister(args[1:])
+    elif args[0] == 'stat':
+        return Stats(args[1:])
+    elif args[0] == 'users':
+        return UsersLister(args[1:])
+    elif args[0] == 'limit':
+        return Limiter(args[1:])
+    elif args[0] == 'rm':
+        return Remover(args[1:])
+    elif args[0] == 'refresh':
+        return Refresher(args[1:])
+    elif args[0] == 'serve':
+        return ServerWrapper(args[1:], **keys)
+    elif args[0] == 'node':
+	return NodeCommand(args[1:])
+    else:
+        return None
+
+def preprocess_args(args, parser):
+    """
+    Ready the args for input to the commands.
+
+    We hand-craft this because the options are variable for the commands, so we
+    can't use optparse for that.
+    """
+
+    keys={}
+    if len(args) == 0:
+        parser.print_help()
+        sys.exit(1)
+
+    if args[0] == '-h':
+        parser.print_help()
+        sys.exit(1)
+
+    try:
+        ind=args.index('-p')
+        try:
+            # update our global var here. The client and
+            # server would both use this
+            pars['port'] = int(args[ind+1])
+        except:
+            print 'Could not get port from input: %s' % args
+            sys.exit(1)
+        del args[ind:ind+2]
+    except:
+        pass
+
+    # now we can get the actual command, if it exists
+    if len(args) == 0:
+        parser.print_help()
+        sys.exit(1)
+
+    return args, keys
+
+def main():
+
+    parser=OptionParser(__doc__)
+    # this won't be used in the usual way
+    parser.add_option("-p", "--port", default=None, help="port for socket")
+
+    args, keys = preprocess_args(sys.argv[1:], parser)
+
+    cmd_obj = get_command_obj(args, **keys)
+    if cmd_obj is None:
+        parser.print_help()
+        sys.exit(1)
+
+    try:
+        cmd_obj.execute()
+    except KeyboardInterrupt:
+        pass
+    except IOError, e:
+        # this is most certainly a "broken pipe" type error when someone pipes
+        # to head or something
+        es=sys.exc_info()
+        if 'Broken pipe' not in es[1]:
+            sys.stderr.write('caught exception type: %s  details: %s\n' % (es[0],es[1]))
+    finally:
+        # this helps with pipes, needed in addition to above catch of IOError
+        try:
+            sys.stdout.flush()
+        except:
+            pass
+
+if __name__=="__main__":
+    main()

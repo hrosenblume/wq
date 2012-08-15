@@ -30,10 +30,6 @@ DEFAULT_SPOOL_DIR = "~/wqspool/"
 #PRIORITY_LIST= ['block','low','med','high']
 PRIORITY_LIST= ['block','high','med','low']
 
-BLOCK_LIST= []
-GLOB_PRIO=''
-GLOB_STAT=''
-
 def print_stat(status):
     """
     input status is the result of cluster.Status
@@ -55,7 +51,7 @@ def print_stat(status):
         	for n in lens:
             	    lens[n] = max(lens[n],len(l[n]))
         	lines.append(l)
-	if(d['online']==False): 
+	if(d['online']==False):
 		usage = '['+'X'*d['ncores']+']'
         	l={'usage':usage,
            	'host':d['hostname'],
@@ -65,7 +61,7 @@ def print_stat(status):
             	    lens[n] = max(lens[n],len(l[n]))
         	lines.append(l)
 		totalActiveCores=totalActiveCores-d['ncores']
-                
+
     fmt = ' %(usage)-'+str(lens['usage'])+'s  %(host)-'+str(lens['host'])+'s '
     fmt += ' %(mem)'+str(lens['mem'])+'s %(groups)-'+str(lens['groups'])+'s'
     hdr={}
@@ -79,9 +75,7 @@ def print_stat(status):
     else: perc=00.00
     print
     print ' Used cores: %i/%i (%3.1f%%) (%i are offline)' % (status['used'],totalActiveCores,perc,status['ncores']-totalActiveCores)
-    if(status['drain']):
-        print " WARNING: WAITING FOR DRAIN"
-    
+
 def print_users(users):
     """
     input should be a dict.  You an convert a Users instance
@@ -261,9 +255,9 @@ class Node:
         self.mem    = float(mem)
         self.used   = 0
 	self.online = True
-        
+
     def setOnline(self,truthValue):
-	self.online = truthValue
+	self.online=truthValue
 
     def Reserve(self):
         self.used+=1
@@ -283,8 +277,7 @@ class Cluster:
     def __init__(self,filename):
         self.filename=filename
         self.nodes={}
-        self.drain = False
-        
+
         for line in open(filename):
             nd = Node(line);
             self.nodes[nd.host] = nd
@@ -292,9 +285,6 @@ class Cluster:
     def Reserve(self,hosts):
         for h in hosts:
             self.nodes[h].Reserve()
-            
-    def setDrain(self,truthValue):
-        self.drain = truthValue
 
     def Unreserve(self,hosts):
         for h in hosts:
@@ -310,13 +300,13 @@ class Cluster:
         nodes.sort()
         for h in nodes:
             nds.append({'hostname':h,'used':self.nodes[h].used,'ncores':self.nodes[h].ncores, \
-                       'mem':self.nodes[h].mem,'grps':self.nodes[h].grps,'online':self.nodes[h].online})
+                       'mem':self.nodes[h].mem, 'grps':self.nodes[h].grps,'online':self.nodes[h].online})
             
             tot+=self.nodes[h].ncores
             used+=self.nodes[h].used
             if (self.nodes[h].used>0):
               use.append((h,self.nodes[h].used))  
-        res['drain']=self.drain
+
         res['used']=used
         res['ncores']=tot
         res['nnodes']=len(self.nodes)
@@ -447,7 +437,7 @@ class Job(dict):
             self['reason'] = "'user' field not in message"
         elif 'commandline' not in self:
             self['status'] = 'nevermatch'
-            self['reason'] = "'commandline' field not in "
+            self['reason'] = "'commandline' field not in message"
         else:
             self['status'] = 'wait'
             self['reason'] = ''
@@ -456,25 +446,14 @@ class Job(dict):
         self.wait_sleep = keys.get('wait_sleep',DEFAULT_WAIT_SLEEP)
 
         self['priority'] = self['require'].get('priority','med')
-        global GLOB_PRIO
-	global GLOB_STAT
-        GLOB_PRIO=self['priority']
-	GLOB_STAT=self['status']
         if self['priority'] not in PRIORITY_LIST: 
             self['status'] = 'nevermatch'
             self['reason']="priority must be on of: " + ",".join(PRIORITY_LIST)
 
         self['time_sub'] = time.time()
         self['spool_fname'] = None
-		
-        reqs = self['require']
-        reqGroups = self._get_req_list(reqs, 'group') 
-        for string in GLOB_PRIO:
-            for igrp in reqGroups:   
-                if (igrp==string):
-                    self['status'] = 'wait'
-                    print "***MATCH*** ",string," ",igrp
-		
+
+
     def Spool(self):
         if self['status'] == 'ready':
             self['status'] = 'run'
@@ -535,7 +514,7 @@ class Job(dict):
                 self['status']='ready'
 
             else:
-                self['status']='wait' 
+                self['status']='wait'
                 self['reason']=reason
 
         else:
@@ -598,29 +577,24 @@ class Job(dict):
         min_mem, reason = _get_dict_float(reqs,'min_mem',0.0)
         if reason:
             return pmatch, match, hosts, reason
-	global offList
-	offList=[]
-	onlineReason=None
+
         for h in sorted(cluster.nodes):
             nd = cluster.nodes[h]
-	    print "HGROUPS",nd.grps
             if(not nd.online):
-		onlineReason='This node is offline.' 
-		offList.append(h)	
-		continue							
+                continue
             if (nd.mem < min_mem):
                 continue
-	    print "OFFLIST",offList
+
             ## is this node actually what we want
             ing = self._get_req_list(reqs, 'group')
             if len(ing) > 0: ##any group in any group
-				ok=False
-				for g in ing:
-					if g in nd.grps:
-						ok=True
-						break
-				if (not ok):
-					continue ### not in the group
+                ok=False
+                for g in ing:
+                    if g in nd.grps:
+                        ok=True
+                        break
+                if (not ok):
+                    continue ### not in the group
                     
             ing = self._get_req_list(reqs, 'notgroup')
             if len(ing) > 0: ##any group in any group
@@ -648,29 +622,12 @@ class Job(dict):
                 N-=nfree
                 for x in xrange(nfree):
                     hosts.append(h)
-	
+ 
         if (not pmatch):
             reason = 'Not enough cores or mem satistifying condition.'
-        if (not match):
-            reason = 'Not enough free cores or node may be offline.'
-	#This code is incase you want to split up errors rather than saying "or"
-	#It is not functional, but some of it may be of use
-	"""
-	if((onlineReason!=None)): #################################################### more here for error 2 ####this is the main figure out the logic
-	    #check the hosts if they are on this list then you know what to do
-	    n=0
-	    print "THESE ARE HOSTS",hosts
-	    for h in hosts:
-		print "H-HOST:",h
-		for o in offList:
-			if (h==o):
-				n=n+1
-				print n
-	    #print "OFFLINELIST GROUPS", offList[0]
-	    if(n>0):
-		reason = onlineReason
-	"""
-
+        elif (not match):
+            reason = 'Not enough free cores.'
+    
         print pmatch, match, hosts, reason
         return pmatch, match, hosts, reason
 
@@ -695,19 +652,14 @@ class Job(dict):
         min_mem, reason = _get_dict_float(reqs,'min_mem',0.0)
         if reason:
             return pmatch, match, hosts, reason
-	global offList
-	offList=[]
-	onlineReason=None
+
         for h in sorted(cluster.nodes):
             nd = cluster.nodes[h]
-	    print "HGROUPS",nd.grps
             if(not nd.online):
-		onlineReason='This node is offline.'
-		offList.append(h)
                 continue
             if (nd.mem < min_mem):
                 continue
-            print "OFFLIST",offList
+            
             ## is this node actually what we want
             ing = self._get_req_list(reqs, 'group')
             if len(ing) > 0: ##any group in any group
@@ -743,6 +695,7 @@ class Job(dict):
                 break
             else:
                 pass
+
         if (not pmatch):
             reason = 'Not a node with that many cores.'
         elif (not match):
@@ -777,21 +730,15 @@ class Job(dict):
         min_cores,reason=_get_dict_int(reqs, 'min_cores', 0)
         if reason:
             return pmatch, match, hosts, reason
-
-	global offList
-	offList=[]
-        onlineReason = None
+        
         for h in sorted(cluster.nodes):
             nd = cluster.nodes[h]
             if(not nd.online):
-		onlineReason='This node is offline.'
-		offList.append(h)
                 continue
             if (nd.mem < min_mem):
                 continue
             if nd.ncores < min_cores:
                 continue
-	    print "OFFLIST",offList
 
             ## is this node actually what we want
             ing = self._get_req_list(reqs, 'group')
@@ -826,9 +773,9 @@ class Job(dict):
                     break
 
         if (not pmatch):
-            reason = 'Not enough total cores satistifying condition or node may be offline.'
+            reason = 'Not enough total cores satistifying condition.'
         elif (not match):
-            reason = 'Not enough free cores or node may be offline.'
+            reason = 'Not enough free cores.'
     
 
         return pmatch, match, hosts, reason
@@ -890,11 +837,9 @@ class Job(dict):
             pmatch=False
             reason = 'Need to specify group'
         else:
-	    onlineReason=None;
             for h in sorted(cluster.nodes):
                 nd = cluster.nodes[h]
                 if(not nd.online):
-		    onlineReason='A single node or all of the nodes in this group are offline'
                     continue
                 if g in nd.grps:
                     pmatch=True
@@ -906,10 +851,7 @@ class Job(dict):
                     else:
                         for x in range(nd.ncores):
                             hosts.append(h)
-
-	    if (onlineReason != None):
-		reason = onlineReason
-            elif (not pmatch):
+            if (not pmatch):
                 reason = 'Not a single node in that group'
         return pmatch, match, hosts, reason
 
@@ -929,10 +871,9 @@ class JobQueue:
         self.setup_spool()
 
         print "Loading cluster from:",cluster_file
-	global globCluster
         self.cluster = Cluster(cluster_file)
         self.queue = []
-	globCluster=self.cluster
+
         self.load_users()
         self.load_spool()
 
@@ -968,12 +909,12 @@ class JobQueue:
             if fn[-4:] == '.run' or fn[-5:] == '.wait':
                 job = None
                 try:
-                    job = cPickle.load(open(fn)) 
+                    job = cPickle.load(open(fn))
                 except:
                     print 'could not unpickle job file:',fn
                     es=sys.exc_info()
                     print 'caught unpickle exception:', es[0],'details:',es[1]
-                print "GOT HERE"
+
                 if job:
                     if job['status']=='run':
                         # here we need to reserve the cluster and increment the
@@ -1006,7 +947,7 @@ class JobQueue:
             - note we should have no 'nevermatch' status here
 
         """
-       
+
         block_pid=None
         pids_to_del = []
         for priority in PRIORITY_LIST:
@@ -1026,9 +967,8 @@ class JobQueue:
                         # blame yourself
                         job['reason'] = 'user limits exceeded'
                     elif block_pid is not None:
-			print "Do we ever reach this?"
-                        #blame the wait on the blocking job
-                        job['reason'] = 'waiting for block from job %s' % block_pid 
+                        # blame the wait on the blocking job
+                        job['reason'] = 'waiting for block from job %s' % block_pid
                     else:
                         # see if we can now run the job
                         job.match(self.cluster)
@@ -1044,35 +984,12 @@ class JobQueue:
                         elif priority == 'block':
                             # special case: if we hit a blocking job that is
                             # waiting, we will not let any others run
-			    print "idk did we?"
                             block_pid = job['pid']
-			    reqs = job['require'] 
-			    reqGroups = job._get_req_list(reqs, 'group')
-			    n=0
-			    ok=False
-			    global BLOCK_LIST
-			    for gr in reqGroups:
-				if(len(BLOCK_LIST)==0):
-					BLOCK_LIST.append(gr)
-				for string in BLOCK_LIST:
-					if(string==gr):
-						print "Found Match"
-						n=n+1
-				if(n==0):
-					BLOCK_LIST.append(g)
-				else:
-					print "# Matches Found: ",n
-								
-			    print "YOU BET WE DID", BLOCK_LIST
-
 
         # rebuild the queue without these items
         if len(pids_to_del) > 0:
             self.queue = [j for j in self.queue if j['pid'] not in pids_to_del]
-        #print self.queue.cluster.Status()    
-        #if(status['ncores']==0):##############test i was thinking about here
-            #self.cluster.drain=False
-            
+
     def _unreserve_job_and_decrement_user(self, job):
         job.UnSpool()
         if job['status'] == 'run':
@@ -1106,34 +1023,12 @@ class JobQueue:
         elif command == 'refresh':
             self.refresh()
             self.response['response'] = 'OK'
-	elif command == 'node':
+	elif command =='node':
 	    self._process_node_request(message)
-	elif command == 'drain':
-            self._process_drain_request(message)
         else:
             self.response['error'] = ("only support 'sub','gethosts', "
                                       "'ls','stat','users','rm','notify','node'"
-                                      "'refresh','drain' commands")
-            
-    def _process_drain_request(self,message):
-	if (not message['yamldrain'].has_key('status')):
-            self.response['error']=('Need to supply status keyword.')
-            return None
-
-        status=message['yamldrain']['status']
-        
-        #if (status=='on'):
-		#setstat=True
-	#elif (status=='off'):
-		#setstat=False
-	#else:
-		#self.response['error']=("Don't understand this status")
-		#return None
-        self.cluster.setDrain(status)#setstat)
-        self.response['response'] = 'OK'
-    	
-	return None
-	
+                                      "'refresh' commands")
     def _process_node_request(self, message):
 
 	nodename = message['node']
@@ -1167,7 +1062,7 @@ class JobQueue:
 
     def _blocking_job(self):
         for job in self.queue:
-            if job['priority'] == 'block' and job['status'] == 'wait': 
+            if job['priority'] == 'block' and job['status'] == 'wait':
                 return job['pid']
         return None
 	
@@ -1177,11 +1072,7 @@ class JobQueue:
         if pid is None:
             self.response['error'] = "submit requests must contain the 'pid' field"
             return
-        
-        if (self.cluster.drain):
-            self.response['error'] = "wait until drain is complete"
-            return
-        
+
         req = message.get('require',None)
         if req  is None:
             self.response['error'] = "submit requests must contain the 'require' field"
@@ -1205,27 +1096,11 @@ class JobQueue:
                 newjob['reason'] = 'user limits exceeded'
             else:
                 block_pid = self._blocking_job()
-		self.refresh()
-           	self.response['response'] = 'OK'
                 if block_pid is not None:
-		    n=0
-		    filterGroups = newjob._get_req_list(req, 'group') 
-		    assignedHosts = newjob['hosts']
-		    for h in assignedHosts:
-			nd=globCluster.nodes[h]
-			filterGroups=filterGroups+nd.grps
-		    if(filterGroups>0):
-		    	print "C"
-		    	for b in BLOCK_LIST:
-				print "D"
-				for a in filterGroups:
-					if a==b:
-						n=n+1
                     # Tell the new job to wait and blame the blocking job
-		    if n>0:
-                    	newjob['status'] = 'wait'
-                    	newjob['reason'] = 'waiting for block from job %s' % block_pid
-                if newjob['status'] == 'ready':
+                    newjob['status'] = 'wait'
+                    newjob['reason'] = 'waiting for block from job %s' % block_pid
+                elif newjob['status'] == 'ready':
 
                     # only by reaching here to we reserve the hosts and
                     # update user info
@@ -1274,7 +1149,6 @@ class JobQueue:
             listing.append(job.asdict())
         
         self.response['response'] = listing
-        self.response['drainStat']= self.cluster.drain  
 
     def _process_userlist_request(self):
         self.response['response'] = self.users.asdict()
@@ -1353,7 +1227,7 @@ class JobQueue:
             self.queue = [j for j in self.queue if j['pid'] not in pids_to_kill]
 
             self.response['response'] = 'OK'
-            self.response['pids_to_kill'] = pids_to_kill 
+            self.response['pids_to_kill'] = pids_to_kill
         """
 
     def _process_notification(self, message):

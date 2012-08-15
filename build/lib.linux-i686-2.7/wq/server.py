@@ -261,9 +261,13 @@ class Node:
         self.mem    = float(mem)
         self.used   = 0
 	self.online = True
+	self.blockstat = False
         
     def setOnline(self,truthValue):
 	self.online = truthValue
+
+    def blockLock(self,truthValue):
+	self.blockstat = truthValue
 
     def Reserve(self):
         self.used+=1
@@ -310,7 +314,7 @@ class Cluster:
         nodes.sort()
         for h in nodes:
             nds.append({'hostname':h,'used':self.nodes[h].used,'ncores':self.nodes[h].ncores, \
-                       'mem':self.nodes[h].mem,'grps':self.nodes[h].grps,'online':self.nodes[h].online})
+                       'mem':self.nodes[h].mem,'grps':self.nodes[h].grps,'online':self.nodes[h].online,'blockstat':self.nodes[h].blockstat})
             
             tot+=self.nodes[h].ncores
             used+=self.nodes[h].used
@@ -458,8 +462,9 @@ class Job(dict):
         self['priority'] = self['require'].get('priority','med')
         global GLOB_PRIO
 	global GLOB_STAT
-        GLOB_PRIO=self['priority']
+        GLOB_PRIO=self['priority']################################################glob def
 	GLOB_STAT=self['status']
+        print "IM HERE BABY IM HERE:", GLOB_PRIO,GLOB_STAT
         if self['priority'] not in PRIORITY_LIST: 
             self['status'] = 'nevermatch'
             self['reason']="priority must be on of: " + ",".join(PRIORITY_LIST)
@@ -468,9 +473,9 @@ class Job(dict):
         self['spool_fname'] = None
 		
         reqs = self['require']
-        reqGroups = self._get_req_list(reqs, 'group') 
+        reqGroups = self._get_req_list(reqs, 'group') ########################################edits
         for string in GLOB_PRIO:
-            for igrp in reqGroups:   
+            for igrp in reqGroups:   ############################################this doesnt work or is not being called
                 if (igrp==string):
                     self['status'] = 'wait'
                     print "***MATCH*** ",string," ",igrp
@@ -535,7 +540,7 @@ class Job(dict):
                 self['status']='ready'
 
             else:
-                self['status']='wait' 
+                self['status']='wait' ####################read
                 self['reason']=reason
 
         else:
@@ -605,22 +610,41 @@ class Job(dict):
             nd = cluster.nodes[h]
 	    print "HGROUPS",nd.grps
             if(not nd.online):
-		onlineReason='This node is offline.' 
+		onlineReason='This node is offline.' #############################this is where the fix will be for error 2
 		offList.append(h)	
-		continue							
+		continue							 #returning the wrong error.... something with continue
             if (nd.mem < min_mem):
                 continue
 	    print "OFFLIST",offList
             ## is this node actually what we want
             ing = self._get_req_list(reqs, 'group')
             if len(ing) > 0: ##any group in any group
+				n=0
 				ok=False
 				for g in ing:
 					if g in nd.grps:
+						print "THIS IS GLOB_PRIO: ",GLOB_PRIO
+						"""
+						if (GLOB_PRIO == 'block'):
+							global BLOCK_LIST
+							if(len(BLOCK_LIST)==0 and GLOB_PRIO=='block'):
+								BLOCK_LIST.append(g)
+							for string in BLOCK_LIST:
+								if(string==g):
+									print "Found Match" ##############################################Implemented here
+									n=n+1
+							if(n==0):
+								BLOCK_LIST.append(g)
+							else:
+								print "# Matches Found: ",n
+								
+							print "BLOCK_LIST = ",BLOCK_LIST
+						"""
 						ok=True
 						break
 				if (not ok):
 					continue ### not in the group
+	    ###else get the first open group and check it out with BLOCK_LIST  #################### how do they find the default?????????
                     
             ing = self._get_req_list(reqs, 'notgroup')
             if len(ing) > 0: ##any group in any group
@@ -653,8 +677,6 @@ class Job(dict):
             reason = 'Not enough cores or mem satistifying condition.'
         if (not match):
             reason = 'Not enough free cores or node may be offline.'
-	#This code is incase you want to split up errors rather than saying "or"
-	#It is not functional, but some of it may be of use
 	"""
 	if((onlineReason!=None)): #################################################### more here for error 2 ####this is the main figure out the logic
 	    #check the hosts if they are on this list then you know what to do
@@ -695,19 +717,15 @@ class Job(dict):
         min_mem, reason = _get_dict_float(reqs,'min_mem',0.0)
         if reason:
             return pmatch, match, hosts, reason
-	global offList
-	offList=[]
 	onlineReason=None
         for h in sorted(cluster.nodes):
             nd = cluster.nodes[h]
-	    print "HGROUPS",nd.grps
             if(not nd.online):
 		onlineReason='This node is offline.'
-		offList.append(h)
                 continue
             if (nd.mem < min_mem):
                 continue
-            print "OFFLIST",offList
+            
             ## is this node actually what we want
             ing = self._get_req_list(reqs, 'group')
             if len(ing) > 0: ##any group in any group
@@ -743,7 +761,9 @@ class Job(dict):
                 break
             else:
                 pass
-        if (not pmatch):
+	if (onlineReason!=None):
+	    reason = onlineReason
+        elif (not pmatch):
             reason = 'Not a node with that many cores.'
         elif (not match):
             reason = 'Not enough free cores on any one node.'
@@ -778,20 +798,16 @@ class Job(dict):
         if reason:
             return pmatch, match, hosts, reason
 
-	global offList
-	offList=[]
         onlineReason = None
         for h in sorted(cluster.nodes):
             nd = cluster.nodes[h]
             if(not nd.online):
 		onlineReason='This node is offline.'
-		offList.append(h)
                 continue
             if (nd.mem < min_mem):
                 continue
             if nd.ncores < min_cores:
                 continue
-	    print "OFFLIST",offList
 
             ## is this node actually what we want
             ing = self._get_req_list(reqs, 'group')
@@ -799,6 +815,9 @@ class Job(dict):
                 ok=False
                 for g in ing:
                     if g in nd.grps:
+                        #BLOCK_LIST.append(g)
+                        #print g," was added to BLOCK_LIST"
+                        #print "BLOCK_LIST = ",BLOCK_LIST
                         ok=True
                         break
                 if (not ok):
@@ -824,11 +843,12 @@ class Job(dict):
                 if (N==0):
                     match=True
                     break
-
-        if (not pmatch):
-            reason = 'Not enough total cores satistifying condition or node may be offline.'
+	if (onlineReason != None):
+	    reason = onlineReason
+        elif (not pmatch):
+            reason = 'Not enough total cores satistifying condition.'
         elif (not match):
-            reason = 'Not enough free cores or node may be offline.'
+            reason = 'Not enough free cores.'
     
 
         return pmatch, match, hosts, reason
@@ -929,7 +949,7 @@ class JobQueue:
         self.setup_spool()
 
         print "Loading cluster from:",cluster_file
-	global globCluster
+	global globCluster####################################################3globCluster
         self.cluster = Cluster(cluster_file)
         self.queue = []
 	globCluster=self.cluster
@@ -1046,8 +1066,8 @@ class JobQueue:
                             # waiting, we will not let any others run
 			    print "idk did we?"
                             block_pid = job['pid']
-			    reqs = job['require'] 
-			    reqGroups = job._get_req_list(reqs, 'group')
+			    reqs = job['require'] ###change job to self
+			    reqGroups = job._get_req_list(reqs, 'group') ###############so experimental
 			    n=0
 			    ok=False
 			    global BLOCK_LIST
@@ -1056,7 +1076,7 @@ class JobQueue:
 					BLOCK_LIST.append(gr)
 				for string in BLOCK_LIST:
 					if(string==gr):
-						print "Found Match"
+						print "Found Match" ################ here
 						n=n+1
 				if(n==0):
 					BLOCK_LIST.append(g)
@@ -1209,11 +1229,16 @@ class JobQueue:
            	self.response['response'] = 'OK'
                 if block_pid is not None:
 		    n=0
-		    filterGroups = newjob._get_req_list(req, 'group') 
+		    print "A"
+		    filterGroups = newjob._get_req_list(req, 'group') ###############so experimental
 		    assignedHosts = newjob['hosts']
+		    print "B"
+		    print "**************filterGroups",filterGroups
+		    print "**************assignedHosts",assignedHosts
 		    for h in assignedHosts:
 			nd=globCluster.nodes[h]
 			filterGroups=filterGroups+nd.grps
+		    print "**************filterGroupsFIN",filterGroups
 		    if(filterGroups>0):
 		    	print "C"
 		    	for b in BLOCK_LIST:
@@ -1221,9 +1246,13 @@ class JobQueue:
 				for a in filterGroups:
 					if a==b:
 						n=n+1
+				print "pass through"
+		    print 'THIS IS N',n
                     # Tell the new job to wait and blame the blocking job
 		    if n>0:
-                    	newjob['status'] = 'wait'
+			##self.cluster.nodes[9].blockLock(True)
+			##i need to find what nodes are in that group, then set their blockLock to true (then set back to false when necessary
+                    	newjob['status'] = 'wait'################################################################
                     	newjob['reason'] = 'waiting for block from job %s' % block_pid
                 if newjob['status'] == 'ready':
 
@@ -1233,7 +1262,41 @@ class JobQueue:
 
                     # keep statistics for each user
                     self.users.increment_user(newjob['user'], newjob['hosts'])
+		"""
+		n=0
+		for b in BLOCK_LIST:
+			#if b==group from newjob ########################### VERY IMPORTANT ADD THIS FIND OUT HOW 
+			""#"
+				WARNING: UNDER CONSTRUCTION
+				LOTS OF CHANGES IN THIS AREA
+				IF PROBLEMS ARISE CHANGE BACK
+				PLEASE TEST
+			""#"
+			#n++
+			print "pass through"
+		#job['status'] == 'wait'
+		#I need to figure out when to change "job" or "newjob... which go where?"########################################
+                block_pid = self._blocking_job() #### only gets the blockpid if that status==wait
+		if(block_pid is not None):
+			 print "IT IS FILLED"
+                if ((block_pid is not None) and n>0):
+                    # Tell the new job to wait and blame the blocking job
+                    newjob['status'] = 'wait'#########now always ready if waiting for blocking job
+                    newjob['reason'] = 'waiting for block from job %s' % block_pid
+		else:
+		    print "IT IS NONE"
+		    newjob['status'] = 'ready'
+		    
 
+                if newjob['status'] == 'ready':#elif newjob['status'] == 'ready': ###adds * when submitted
+                    print "magic happened today folks"
+                    # only by reaching here to we reserve the hosts and
+                    # update user info
+                    self.cluster.Reserve(newjob['hosts'])
+		    print "yes magic"
+                    # keep statistics for each user
+                    self.users.increment_user(newjob['user'], newjob['hosts'])
+		"""
             # this will create a pid.wait or pid.run depending on status
             # if status='ready', sets status to 'run' once the pid file is written
             newjob.Spool()
@@ -1274,7 +1337,7 @@ class JobQueue:
             listing.append(job.asdict())
         
         self.response['response'] = listing
-        self.response['drainStat']= self.cluster.drain  
+        self.response['drainStat']= self.cluster.drain  ##########is this right?#######
 
     def _process_userlist_request(self):
         self.response['response'] = self.users.asdict()
